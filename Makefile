@@ -11,12 +11,14 @@ clean:
 	-@oc delete -n $(PROJ) cm/php
 	-@oc delete all -n $(PROJ) -l app=database
 	-@oc delete -n $(PROJ) secret/database
+	-@oc delete -n $(PROJ) pvc/database
 
 create-project:
 	-@oc new-project $(PROJ)
 
 install-db:
 	@oc create secret generic database -n $(PROJ) --from-literal=SA_PASSWORD=$(DB_PASSWORD)
+	@oc apply -n $(PROJ) -f ./database-pvc.yaml
 	@oc create deployment database \
 	  -n $(PROJ) \
 	  --image mcr.microsoft.com/mssql/server:2019-latest
@@ -25,7 +27,21 @@ install-db:
 	  ACCEPT_EULA=Y \
 	  --from secret/database \
 	  -n $(PROJ)
-	oc expose deploy/database -n $(PROJ) --port 1433
+	@oc set volume deploy/database \
+	  -n $(PROJ) \
+	  --add \
+	  --name data \
+	  -t pvc \
+	  --claim-name database \
+	  -m /var/opt/mssql/data
+	@oc expose deploy/database -n $(PROJ) --port 1433
+	@sleep 5
+	@/bin/echo -n "Waiting for only a single database pod to remain..."
+	@while [ `oc get -n $(PROJ) po -l app=database --no-headers | wc -l` -ne 1 ]; do \
+	  /bin/echo -n "."; \
+	  sleep 1; \
+	done
+	@echo "done"
 
 populate-db:
 	@echo "Waiting for database to start..."
@@ -34,8 +50,8 @@ populate-db:
 	  --timeout=120s \
 	  --for=condition=available \
 	  deploy/database
-	@echo "Pausing to let the database settle down..."
-	@sleep 30
+	@#echo "Pausing to let the database settle down..."
+	@#sleep 30
 	@oc rsh -n $(PROJ) deploy/database mkdir /tmp/db
 	@oc cp db_data/import-data.sh $(PROJ)/`oc get po -l app=database -o jsonpath='{.items[0].metadata.name}'`:/tmp/db/
 	@oc cp db_data/Products.csv $(PROJ)/`oc get po -l app=database -o jsonpath='{.items[0].metadata.name}'`:/tmp/db/
